@@ -10,6 +10,8 @@
 
 #include "../Backends.h"
 
+#include <cstdlib>
+#include <cstring>
 #include <vector>
 
 namespace Casement
@@ -44,6 +46,76 @@ DWORD WindowedStyle(bool resizable)
 }
 
 //------------------------------------------------------------------------------------------------
+const IconImage *ClosestIcon(const IconImage *pImages, size_t count, int size)
+{
+    const IconImage *pBest = nullptr;
+    for (size_t i = 0; i < count; ++i)
+    {
+        const IconImage &image = pImages[i];
+        if (image.width <= 0 || image.height <= 0 || image.pPixels == nullptr)
+            continue;
+        if (!pBest || std::abs(image.width - size) < std::abs(pBest->width - size))
+            pBest = &image;
+    }
+    return pBest;
+}
+
+//------------------------------------------------------------------------------------------------
+HICON CreateIconFromImage(const IconImage &image)
+{
+    // 0xAARRGGBB in memory is B, G, R, A: a top-down 32-bit BGRA DIB.
+    BITMAPV5HEADER header = {};
+    header.bV5Size = sizeof(header);
+    header.bV5Width = image.width;
+    header.bV5Height = -image.height;
+    header.bV5Planes = 1;
+    header.bV5BitCount = 32;
+    header.bV5Compression = BI_BITFIELDS;
+    header.bV5RedMask = 0x00FF0000;
+    header.bV5GreenMask = 0x0000FF00;
+    header.bV5BlueMask = 0x000000FF;
+    header.bV5AlphaMask = 0xFF000000;
+
+    void *pBits = nullptr;
+    HDC hdc = GetDC(nullptr);
+    HBITMAP hColor = CreateDIBSection(hdc, reinterpret_cast<BITMAPINFO *>(&header), DIB_RGB_COLORS, &pBits, nullptr, 0);
+    ReleaseDC(nullptr, hdc);
+    if (hColor == nullptr)
+        return nullptr;
+    std::memcpy(pBits, image.pPixels, static_cast<size_t>(image.width) * static_cast<size_t>(image.height) * 4);
+
+    // The alpha channel defines transparency; the 1-bit mask is required but unused, so clear it.
+    std::vector<BYTE> mask(static_cast<size_t>((image.width + 15) / 16 * 2) * static_cast<size_t>(image.height));
+    HBITMAP hMask = CreateBitmap(image.width, image.height, 1, 1, mask.data());
+
+    ICONINFO info = {};
+    info.fIcon = TRUE;
+    info.hbmMask = hMask;
+    info.hbmColor = hColor;
+    HICON hIcon = CreateIconIndirect(&info);
+    DeleteObject(hColor);
+    DeleteObject(hMask);
+    return hIcon;
+}
+
+//------------------------------------------------------------------------------------------------
+bool IsRawMouseRegistered()
+{
+    UINT count = 0;
+    GetRegisteredRawInputDevices(nullptr, &count, sizeof(RAWINPUTDEVICE));
+    std::vector<RAWINPUTDEVICE> devices(count);
+    if (count == 0 || GetRegisteredRawInputDevices(devices.data(), &count, sizeof(RAWINPUTDEVICE)) == UINT(-1))
+        return false;
+
+    for (const RAWINPUTDEVICE &device : devices)
+    {
+        if (device.usUsagePage == 0x01 && device.usUsage == 0x02) // HID_USAGE_PAGE_GENERIC, HID_USAGE_GENERIC_MOUSE
+            return true;
+    }
+    return false;
+}
+
+//------------------------------------------------------------------------------------------------
 class CWin32Window final : public CWindow
 {
 public:
@@ -52,6 +124,7 @@ public:
 
     void Show() override { ::ShowWindow(m_hWnd, SW_SHOW); }
     void SetTitle(const std::string &title) override { SetWindowTextW(m_hWnd, Widen(title).c_str()); }
+    void SetIcon(const IconImage *pImages, size_t count) override;
     void SetClientSize(int width, int height) override;
     void GetClientSize(int &width, int &height) const override;
     void SetFullscreen(bool fullscreen) override;
@@ -69,14 +142,18 @@ private:
     void OnButtonMessage(MouseButton button, bool pressed, WPARAM wParam);
     void OnRawInput(LPARAM lParam);
     void ClipToClientArea();
+    void DestroyIcons();
 
     HINSTANCE m_hInstance;
     HWND m_hWnd = nullptr;
     HBRUSH m_hBackground = nullptr;
+    HICON m_hIcon = nullptr;        // Set with SetIcon; null means the class icon
+    HICON m_hSmallIcon = nullptr;
     DWORD m_Style;
     RECT m_WindowedRect = {};
     bool m_Fullscreen = false;
     bool m_Captured = false;
+    bool m_OwnsRawMouse = false;    // Casement registered raw mouse input, so it unregisters it
     bool m_Focused = false;
     bool m_Dispatching = false; // Events are held back during construction and destruction
     std::vector<BYTE> m_RawInput;
@@ -120,8 +197,39 @@ CWin32Window::~CWin32Window()
     SetMouseCaptured(false);
     if (m_hWnd)
         DestroyWindow(m_hWnd);
+    DestroyIcons();
     if (m_hBackground)
         DeleteObject(m_hBackground);
+}
+
+//------------------------------------------------------------------------------------------------
+void CWin32Window::SetIcon(const IconImage *pImages, size_t count)
+{
+    HICON hIcon = nullptr;
+    HICON hSmallIcon = nullptr;
+    if (const IconImage *pImage = ClosestIcon(pImages, count, GetSystemMetrics(SM_CXICON)))
+        hIcon = CreateIconFromImage(*pImage);
+    if (const IconImage *pImage = ClosestIcon(pImages, count, GetSystemMetrics(SM_CXSMICON)))
+        hSmallIcon = CreateIconFromImage(*pImage);
+
+    // A null icon falls back to the window class's.
+    SendMessageW(m_hWnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(hIcon));
+    SendMessageW(m_hWnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(hSmallIcon));
+
+    DestroyIcons();
+    m_hIcon = hIcon;
+    m_hSmallIcon = hSmallIcon;
+}
+
+//------------------------------------------------------------------------------------------------
+void CWin32Window::DestroyIcons()
+{
+    if (m_hIcon)
+        DestroyIcon(m_hIcon);
+    if (m_hSmallIcon)
+        DestroyIcon(m_hSmallIcon);
+    m_hIcon = nullptr;
+    m_hSmallIcon = nullptr;
 }
 
 //------------------------------------------------------------------------------------------------
@@ -188,13 +296,21 @@ bool CWin32Window::SetMouseCaptured(bool captured)
     if (captured == m_Captured)
         return true;
 
-    RAWINPUTDEVICE device = {};
-    device.usUsagePage = 0x01;  // HID_USAGE_PAGE_GENERIC
-    device.usUsage = 0x02;      // HID_USAGE_GENERIC_MOUSE
-    device.dwFlags = captured ? 0 : RIDEV_REMOVE;
-    device.hwndTarget = captured ? m_hWnd : nullptr;
-    if (!RegisterRawInputDevices(&device, 1, sizeof(device)))
-        return false;
+    // Raw input registration is per process: leave one the application made alone, and remove
+    // only Casement's own.
+    bool registerMouse = captured && !IsRawMouseRegistered();
+    bool unregisterMouse = !captured && m_OwnsRawMouse;
+    if (registerMouse || unregisterMouse)
+    {
+        RAWINPUTDEVICE device = {};
+        device.usUsagePage = 0x01;  // HID_USAGE_PAGE_GENERIC
+        device.usUsage = 0x02;      // HID_USAGE_GENERIC_MOUSE
+        device.dwFlags = registerMouse ? 0 : RIDEV_REMOVE;
+        device.hwndTarget = registerMouse ? m_hWnd : nullptr;
+        if (!RegisterRawInputDevices(&device, 1, sizeof(device)))
+            return false;
+        m_OwnsRawMouse = registerMouse;
+    }
 
     m_Captured = captured;
 
@@ -259,6 +375,16 @@ LRESULT CALLBACK CWin32Window::WndProc(HWND hWnd, UINT message, WPARAM wParam, L
 //------------------------------------------------------------------------------------------------
 LRESULT CWin32Window::WindowProc(UINT message, WPARAM wParam, LPARAM lParam)
 {
+    if (m_Dispatching)
+    {
+        if (const Win32MessageHook &hook = GetWin32MessageHook())
+        {
+            intptr_t result = 0;
+            if (hook(m_hWnd, message, wParam, lParam, result))
+                return result;
+        }
+    }
+
     switch (message)
     {
     case WM_CLOSE:
@@ -428,7 +554,7 @@ class CWin32Display final : public CDisplay
 {
 public:
     CWin32Display();
-    ~CWin32Display() override { UnregisterClassW(c_ClassName, m_hInstance); }
+    ~CWin32Display() override;
 
     Backend GetBackend() const override { return Backend::Win32; }
 
@@ -442,6 +568,8 @@ public:
 
 private:
     HINSTANCE m_hInstance = nullptr;
+    HICON m_hIcon = nullptr;        // Extracted from the executable; destroyed with the display
+    HICON m_hSmallIcon = nullptr;
 };
 
 //------------------------------------------------------------------------------------------------
@@ -451,15 +579,62 @@ CWin32Display::CWin32Display()
     GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
         reinterpret_cast<LPCWSTR>(&CWin32Window::WndProc), &m_hInstance);
 
+    // The executable's first icon resource, which is the one Explorer shows.
+    // Copied out, as a string name isn't documented to outlive the enumeration.
+    struct IconName
+    {
+        bool found = false;
+        WORD id = 0;
+        std::wstring text;
+    } name;
+    HMODULE hExe = GetModuleHandleW(nullptr);
+    EnumResourceNamesW(hExe, RT_GROUP_ICON,
+        [](HMODULE, LPCWSTR, LPWSTR pName, LONG_PTR pData) -> BOOL
+        {
+            auto pIconName = reinterpret_cast<IconName *>(pData);
+            pIconName->found = true;
+            if (IS_INTRESOURCE(pName))
+                pIconName->id = static_cast<WORD>(reinterpret_cast<ULONG_PTR>(pName));
+            else
+                pIconName->text = pName;
+            return FALSE; // Stop at the first
+        },
+        reinterpret_cast<LONG_PTR>(&name));
+    if (name.found)
+    {
+        LPCWSTR pIconName = name.text.empty() ? MAKEINTRESOURCEW(name.id) : name.text.c_str();
+        m_hIcon = static_cast<HICON>(LoadImageW(hExe, pIconName, IMAGE_ICON,
+            GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0));
+        m_hSmallIcon = static_cast<HICON>(LoadImageW(hExe, pIconName, IMAGE_ICON,
+            GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0));
+    }
+
     WNDCLASSEXW wcex = { sizeof(wcex) };
     wcex.style = CS_HREDRAW | CS_VREDRAW;
     wcex.lpfnWndProc = CWin32Window::WndProc;
     wcex.hInstance = m_hInstance;
-    wcex.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+    wcex.hIcon = m_hIcon ? m_hIcon : LoadIconW(nullptr, IDI_APPLICATION);
+    wcex.hIconSm = m_hSmallIcon;
     wcex.hCursor = LoadCursorW(nullptr, IDC_ARROW);
     wcex.lpszClassName = c_ClassName;
     if (RegisterClassExW(&wcex) == 0)
+    {
+        DWORD error = GetLastError();
+        if (m_hIcon) DestroyIcon(m_hIcon);
+        if (m_hSmallIcon) DestroyIcon(m_hSmallIcon);
+        SetLastError(error);
         ThrowLastError("RegisterClassExW");
+    }
+}
+
+//------------------------------------------------------------------------------------------------
+CWin32Display::~CWin32Display()
+{
+    UnregisterClassW(c_ClassName, m_hInstance);
+    if (m_hIcon)
+        DestroyIcon(m_hIcon);
+    if (m_hSmallIcon)
+        DestroyIcon(m_hSmallIcon);
 }
 
 //------------------------------------------------------------------------------------------------

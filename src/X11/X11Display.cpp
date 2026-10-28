@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
+#include <vector>
 
 namespace Casement
 {
@@ -47,6 +48,7 @@ public:
     xcb_atom_t m_WmProtocols = XCB_ATOM_NONE;
     xcb_atom_t m_WmDeleteWindow = XCB_ATOM_NONE;
     xcb_atom_t m_NetWmName = XCB_ATOM_NONE;
+    xcb_atom_t m_NetWmIcon = XCB_ATOM_NONE;
     xcb_atom_t m_NetWmState = XCB_ATOM_NONE;
     xcb_atom_t m_NetWmStateFullscreen = XCB_ATOM_NONE;
     xcb_atom_t m_Utf8String = XCB_ATOM_NONE;
@@ -73,6 +75,7 @@ public:
 
     void Show() override;
     void SetTitle(const std::string &title) override;
+    void SetIcon(const IconImage *pImages, size_t count) override;
     void SetClientSize(int width, int height) override;
     void GetClientSize(int &width, int &height) const override { width = m_Width; height = m_Height; }
     void SetFullscreen(bool fullscreen) override;
@@ -128,6 +131,7 @@ CX11Display::CX11Display()
     m_WmProtocols = InternAtom("WM_PROTOCOLS");
     m_WmDeleteWindow = InternAtom("WM_DELETE_WINDOW");
     m_NetWmName = InternAtom("_NET_WM_NAME");
+    m_NetWmIcon = InternAtom("_NET_WM_ICON");
     m_NetWmState = InternAtom("_NET_WM_STATE");
     m_NetWmStateFullscreen = InternAtom("_NET_WM_STATE_FULLSCREEN");
     m_Utf8String = InternAtom("UTF8_STRING");
@@ -377,6 +381,29 @@ void CX11Window::SetTitle(const std::string &title)
     auto length = static_cast<uint32_t>(title.size());
     xcb_change_property(Connection(), XCB_PROP_MODE_REPLACE, m_Window, m_Display.m_NetWmName, m_Display.m_Utf8String, 8, length, title.data());
     xcb_change_property(Connection(), XCB_PROP_MODE_REPLACE, m_Window, XCB_ATOM_WM_NAME, XCB_ATOM_STRING, 8, length, title.data());
+    xcb_flush(Connection());
+}
+
+//------------------------------------------------------------------------------------------------
+void CX11Window::SetIcon(const IconImage *pImages, size_t count)
+{
+    // _NET_WM_ICON (EWMH): for each size, width and height, then 0xAARRGGBB pixels, as CARDINALs.
+    std::vector<uint32_t> data;
+    for (size_t i = 0; i < count; ++i)
+    {
+        const IconImage &image = pImages[i];
+        if (image.width <= 0 || image.height <= 0 || image.pPixels == nullptr)
+            continue;
+        data.push_back(static_cast<uint32_t>(image.width));
+        data.push_back(static_cast<uint32_t>(image.height));
+        data.insert(data.end(), image.pPixels, image.pPixels + static_cast<size_t>(image.width) * static_cast<size_t>(image.height));
+    }
+
+    if (data.empty())
+        xcb_delete_property(Connection(), m_Window, m_Display.m_NetWmIcon);
+    else
+        xcb_change_property(Connection(), XCB_PROP_MODE_REPLACE, m_Window, m_Display.m_NetWmIcon, XCB_ATOM_CARDINAL, 32,
+            static_cast<uint32_t>(data.size()), data.data());
     xcb_flush(Connection());
 }
 

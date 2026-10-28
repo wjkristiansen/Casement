@@ -7,7 +7,9 @@
 
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -116,6 +118,15 @@ struct WindowDesc
     std::optional<uint32_t> backgroundColor;
 };
 
+//------------------------------------------------------------------------------------------------
+// One size of a window icon. Pixels are row-major 0xAARRGGBB, not premultiplied.
+struct IconImage
+{
+    int width = 0;
+    int height = 0;
+    const uint32_t *pPixels = nullptr;
+};
+
 class CWindow;
 
 //------------------------------------------------------------------------------------------------
@@ -162,6 +173,11 @@ public:
 
     virtual void SetTitle(const std::string &title) = 0;
 
+    // Supply several sizes and each platform picks the closest it needs; count 0 restores the
+    // default. On Win32 the default is the executable's own icon. Wayland has no window icons:
+    // desktops take them from the application's .desktop file, so this does nothing there.
+    virtual void SetIcon(const IconImage *pImages, size_t count) = 0;
+
     virtual void SetClientSize(int width, int height) = 0;
     virtual void GetClientSize(int &width, int &height) const = 0;
 
@@ -171,7 +187,9 @@ public:
     virtual bool HasFocus() const = 0;
 
     // Hide the cursor, keep it inside the window, and report motion through OnMouseDelta.
-    // Returns false if the platform cannot capture the mouse.
+    // Returns false if the platform cannot capture the mouse. On Win32 this registers raw mouse
+    // input only if nothing else in the process has; an application that registers its own
+    // should do so before capturing.
     virtual bool SetMouseCaptured(bool captured) = 0;
     virtual bool IsMouseCaptured() const = 0;
 
@@ -179,14 +197,23 @@ public:
 
     void SetEvents(IWindowEvents *pEvents) { m_pEvents = pEvents; }
 
+    // Win32 only; other backends never call it. Sees each message for this window before
+    // Casement does, with hWnd as the HWND. Return true to consume the message, with result as
+    // the window procedure's return value. Let WM_INPUT through: DefWindowProc releases its data.
+    using Win32MessageHook = std::function<bool(void *hWnd, uint32_t message, uintptr_t wParam, intptr_t lParam, intptr_t &result)>;
+    void SetWin32MessageHook(Win32MessageHook hook) { m_Win32MessageHook = std::move(hook); }
+
 protected:
     explicit CWindow(IWindowEvents *pEvents) : m_pEvents(pEvents) {}
 
     // Every backend dispatches through here, so a null event sink is always safe.
     IWindowEvents &Events() { return m_pEvents ? *m_pEvents : s_NullEvents; }
 
+    const Win32MessageHook &GetWin32MessageHook() const { return m_Win32MessageHook; }
+
 private:
     IWindowEvents *m_pEvents;
+    Win32MessageHook m_Win32MessageHook;
     static inline IWindowEvents s_NullEvents;
 };
 

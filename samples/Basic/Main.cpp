@@ -9,6 +9,8 @@
 #include <Casement/Casement.h>
 
 #include <cstdio>
+#include <iterator>
+#include <vector>
 
 using namespace Casement;
 
@@ -81,6 +83,25 @@ public:
 };
 
 //------------------------------------------------------------------------------------------------
+// A filled circle, so the sample has an icon of its own.
+static std::vector<uint32_t> MakeIcon(int size)
+{
+    std::vector<uint32_t> pixels(static_cast<size_t>(size * size));
+    double radius = size / 2.0;
+    for (int y = 0; y < size; ++y)
+    {
+        for (int x = 0; x < size; ++x)
+        {
+            double dx = x + 0.5 - radius;
+            double dy = y + 0.5 - radius;
+            bool inside = dx * dx + dy * dy <= radius * radius;
+            pixels[static_cast<size_t>(y * size + x)] = inside ? 0xFF3080E0u : 0x00000000u;
+        }
+    }
+    return pixels;
+}
+
+//------------------------------------------------------------------------------------------------
 int main()
 {
     try
@@ -94,6 +115,12 @@ int main()
 
         CSampleEvents events;
         auto pWindow = pDisplay->OpenWindow(desc, &events);
+
+        std::vector<uint32_t> icon16 = MakeIcon(16);
+        std::vector<uint32_t> icon32 = MakeIcon(32);
+        IconImage icons[] = { { 16, 16, icon16.data() }, { 32, 32, icon32.data() } };
+        pWindow->SetIcon(icons, std::size(icons));
+
         pWindow->Show();
 
         while (events.m_Running)

@@ -138,6 +138,7 @@ public:
 
     void Show() override;
     void SetTitle(const std::string &title) override;
+    void SetIcon(const IconImage *, size_t) override {} // Desktops take icons from the app's .desktop file
     void SetClientSize(int width, int height) override;
     void GetClientSize(int &width, int &height) const override { width = m_Width; height = m_Height; }
     void SetFullscreen(bool fullscreen) override;

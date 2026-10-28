@@ -56,6 +56,11 @@ cmake --build build
 
 As a subproject, `add_subdirectory(Casement)` and link `Casement::Casement`.
 
+Casement is a static library, and its interface uses standard library types (`std::string`,
+`std::unique_ptr`, `std::optional`, `std::function`, and `Casement::Error` derives from
+`std::runtime_error`). Don't pass Casement objects across a shared library boundary (a DLL or
+`.so`) unless both sides are built with the same compiler, standard library, and ABI settings.
+
 Turn a backend off with `-DCASEMENT_X11=OFF` or `-DCASEMENT_WAYLAND=OFF`.
 
 Wayland compositors don't all draw title bars: GNOME and WSLg leave that to the application.
@@ -72,4 +77,4 @@ dependency, at the cost of frameless windows on such compositors.
   Win32 raw input.
 - **High DPI.** Sizes are in pixels, with no per-monitor DPI awareness on Win32 and no buffer
   scale on Wayland.
-- **Icons, cursors, multiple monitors, clipboard:** not yet.
+- **Cursor shapes, multiple monitors, clipboard:** not yet.
